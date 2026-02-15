@@ -1,0 +1,232 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import time
+
+# ===================== Data Loading =====================
+
+# Load dataset
+df = pd.read_csv("/kaggle/input/supply-chain-dataset/supply_chain_data.csv")
+
+# Keep only numeric columns and fill NaNs
+df_numeric = df.select_dtypes(include=[np.number]).fillna(0)
+
+# DIM = number of rows (each bit decides whether to include that row)
+DIM = df_numeric.shape[0]
+
+# ===================== Hyperparameters =====================
+
+POP_SIZE = 30
+MAX_ITER = 100
+
+# PSO parameters
+INERTIA = 0.5
+C1 = 1.5
+C2 = 1.5
+VEL_MAX = 1.0
+VEL_MIN = -1.0
+
+# GA parameters
+MUTATION_RATE = 0.1
+
+# ===================== Cost Function =====================
+
+def calculate_cost(solution):
+    """
+    solution: binary vector of length DIM.
+    1 = select that row, 0 = ignore.
+    Cost = sum of all numeric values in selected rows.
+    Lower is better.
+    """
+    if solution.sum() == 0:
+        # Penalize selecting nothing (otherwise cost=0 becomes trivial best)
+        return 1e12
+    selected_rows = df_numeric[solution == 1]
+    return selected_rows.sum().sum()
+
+# ===================== GA Operators =====================
+
+def create_individual():
+    # Random 0/1 row-selection vector
+    return np.random.randint(0, 2, DIM)
+
+def crossover(p1, p2):
+    point = np.random.randint(1, DIM - 1)
+    c1 = np.concatenate([p1[:point], p2[point:]])
+    c2 = np.concatenate([p2[:point], p1[point:]])
+    return c1, c2
+
+def mutate(ind):
+    for i in range(DIM):
+        if np.random.rand() < MUTATION_RATE:
+            ind[i] = 1 - ind[i]
+    return ind
+
+# ===================== PSO Operators =====================
+
+def update_velocity(p, g_best):
+    r1, r2 = np.random.rand(DIM), np.random.rand(DIM)
+    inertia = INERTIA * p['velocity']
+    cognitive = C1 * r1 * (p['best_pos'] - p['position'])
+    social = C2 * r2 * (g_best - p['position'])
+    p['velocity'] = np.clip(inertia + cognitive + social, VEL_MIN, VEL_MAX)
+
+def update_position(p):
+    # Binary PSO using sigmoid
+    sigmoid = 1 / (1 + np.exp(-p['velocity']))
+    rand_vals = np.random.rand(DIM)
+    p['position'] = (rand_vals < sigmoid).astype(int)
+
+# ===================== Hybrid GA–PSO =====================
+
+def hybrid_ga_pso():
+    ga_costs, pso_costs, hybrid_costs = [], [], []
+
+    # -------- GA ONLY (baseline) --------
+    ga_pop = [create_individual() for _ in range(POP_SIZE)]
+    ga_best = min(ga_pop, key=calculate_cost)
+    ga_best_cost = calculate_cost(ga_best)
+
+    for _ in range(MAX_ITER):
+        new_gen = []
+        while len(new_gen) < POP_SIZE:
+            p1 = ga_pop[np.random.randint(POP_SIZE)]
+            p2 = ga_pop[np.random.randint(POP_SIZE)]
+            c1, c2 = crossover(p1, p2)
+            new_gen.extend([mutate(c1), mutate(c2)])
+        ga_pop = new_gen[:POP_SIZE]
+
+        for ind in ga_pop:
+            cost = calculate_cost(ind)
+            if cost < ga_best_cost:
+                ga_best_cost = cost
+                ga_best = ind.copy()
+
+        ga_costs.append(ga_best_cost)
+
+    # -------- PSO ONLY (baseline) --------
+    pso = []
+    pso_best = None
+    pso_best_cost = float('inf')
+
+    for _ in range(POP_SIZE):
+        pos = create_individual()
+        vel = np.random.uniform(VEL_MIN, VEL_MAX, DIM)
+        fitness = calculate_cost(pos)
+        pso.append({
+            'position': pos,
+            'velocity': vel,
+            'best_pos': pos.copy(),
+            'best_cost': fitness
+        })
+        if fitness < pso_best_cost:
+            pso_best_cost = fitness
+            pso_best = pos.copy()
+
+    for _ in range(MAX_ITER):
+        for p in pso:
+            update_velocity(p, pso_best)
+            update_position(p)
+            fitness = calculate_cost(p['position'])
+
+            if fitness < p['best_cost']:
+                p['best_cost'] = fitness
+                p['best_pos'] = p['position'].copy()
+
+            if fitness < pso_best_cost:
+                pso_best_cost = fitness
+                pso_best = p['position'].copy()
+
+        pso_costs.append(pso_best_cost)
+
+    # -------- HYBRID: GA phase -> PSO refinement --------
+
+    GA_ITER_HYB = MAX_ITER // 2
+    PSO_ITER_HYB = MAX_ITER - GA_ITER_HYB
+
+    # --- GA phase (for hybrid) ---
+    hyb_pop = [create_individual() for _ in range(POP_SIZE)]
+    hyb_best = min(hyb_pop, key=calculate_cost)
+    hyb_best_cost = calculate_cost(hyb_best)
+
+    for _ in range(GA_ITER_HYB):
+        new_gen = []
+        while len(new_gen) < POP_SIZE:
+            p1 = hyb_pop[np.random.randint(POP_SIZE)]
+            p2 = hyb_pop[np.random.randint(POP_SIZE)]
+            c1, c2 = crossover(p1, p2)
+            new_gen.extend([mutate(c1), mutate(c2)])
+        hyb_pop = new_gen[:POP_SIZE]
+
+        for ind in hyb_pop:
+            cost = calculate_cost(ind)
+            if cost < hyb_best_cost:
+                hyb_best_cost = cost
+                hyb_best = ind.copy()
+
+        hybrid_costs.append(hyb_best_cost)  # cost trace during GA phase
+
+    # --- Initialize PSO swarm from best GA individuals ---
+    hyb_pop_sorted = sorted(hyb_pop, key=calculate_cost)
+    initial_positions = [ind.copy() for ind in hyb_pop_sorted[:POP_SIZE]]
+
+    swarm = []
+    g_best = None
+    g_best_cost = float('inf')
+
+    for pos in initial_positions:
+        vel = np.random.uniform(VEL_MIN, VEL_MAX, DIM)
+        fitness = calculate_cost(pos)
+        particle = {
+            'position': pos.copy(),
+            'velocity': vel,
+            'best_pos': pos.copy(),
+            'best_cost': fitness
+        }
+        swarm.append(particle)
+        if fitness < g_best_cost:
+            g_best_cost = fitness
+            g_best = pos.copy()
+
+    # --- PSO refinement phase (for hybrid) ---
+    for _ in range(PSO_ITER_HYB):
+        for p in swarm:
+            update_velocity(p, g_best)
+            update_position(p)
+            fitness = calculate_cost(p['position'])
+
+            if fitness < p['best_cost']:
+                p['best_cost'] = fitness
+                p['best_pos'] = p['position'].copy()
+
+            if fitness < g_best_cost:
+                g_best_cost = fitness
+                g_best = p['position'].copy()
+
+        hybrid_costs.append(g_best_cost)
+
+    # -------- Final Results --------
+    final_ga = ga_costs[-1]
+    final_pso = pso_costs[-1]
+    final_hybrid = hybrid_costs[-1]
+
+    print(f"GA Final Cost: {final_ga:.2f}")
+    print(f"PSO Final Cost: {final_pso:.2f}")
+    print(f"Hybrid GA-PSO Final Cost: {final_hybrid:.2f}\n")
+
+    # -------- Plot --------
+    plt.figure(figsize=(10, 6))
+    plt.plot(ga_costs, label="GA")
+    plt.plot(pso_costs, label="PSO")
+    plt.plot(hybrid_costs, label="Hybrid GA-PSO")
+    plt.title("Performance Comparison of GA, PSO, and Hybrid GA-PSO")
+    plt.xlabel("Iteration")
+    plt.ylabel("Best Cost")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+# ===================== Run =====================
+
+hybrid_ga_pso()
