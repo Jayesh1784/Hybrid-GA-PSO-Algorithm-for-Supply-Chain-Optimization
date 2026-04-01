@@ -58,5 +58,7 @@ This balance improves both **exploration and exploitation** capabilities.
 - 📦 Applicable to real-world supply chain problems  
 
 ---
-
-## 📂 Project Structure
+### 📊 Observations
+- Hybrid GA-PSO converges faster than GA
+- Avoids premature convergence
+- Achieves lower cost (better fitness)
