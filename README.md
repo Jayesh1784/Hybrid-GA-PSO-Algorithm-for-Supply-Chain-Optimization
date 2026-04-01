@@ -58,12 +58,13 @@ This balance improves both **exploration and exploitation** capabilities.
 - 📦 Applicable to real-world supply chain problems  
 
 ---
+## 📈 Results
+
+| Iteration_1 | Iteration_2 |
+|----------------|--------------|
+| ![](results/convergence_graph1.png) | ![](results/convergence_graph2.png) |
+
 ### 📊 Observations
 - Hybrid GA-PSO converges faster than GA
 - Avoids premature convergence
 - Achieves lower cost (better fitness)
-## 📈 Results
-
-| GA Convergence | Hybrid GA-PSO |
-|----------------|--------------|
-| ![](results/convergence_graph1.png) | ![](results/convergence_graph2.png) |
